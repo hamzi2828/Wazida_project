@@ -266,7 +266,7 @@ Keeping time-off balances synchronized between two independent systems is inhere
 
 ## 8. Test Strategy
 
-### Unit Tests (31 tests)
+### Unit Tests (71 tests)
 Service-level tests with in-memory SQLite databases. Cover:
 - Balance CRUD operations (upsert, reserve, release, confirm, reverse, batch)
 - Request lifecycle state transitions (create, approve, reject, cancel)
