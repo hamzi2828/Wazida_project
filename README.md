@@ -147,4 +147,3 @@ See [TRD.md](./TRD.md) for the full Technical Requirements Document including:
 - Security considerations
 - Alternatives considered
 - Test strategy
-# Wazida_project
