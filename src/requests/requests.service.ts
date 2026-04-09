@@ -6,7 +6,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, FindOptionsWhere } from 'typeorm';
+import { Repository, DataSource, FindOptionsWhere, In } from 'typeorm';
 import { TimeOffRequest } from './time-off-request.entity';
 import { RequestStatus } from './request-status.enum';
 import { CreateRequestDto } from './dto/create-request.dto';
@@ -34,10 +34,45 @@ export class RequestsService {
       );
     }
 
+    // Validate numberOfDays does not exceed calendar days in range
+    const start = new Date(dto.startDate);
+    const end = new Date(dto.endDate);
+    const calendarDays =
+      Math.ceil(
+        (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
+      ) + 1;
+    if (dto.numberOfDays > calendarDays) {
+      throw new BadRequestException(
+        `numberOfDays (${dto.numberOfDays}) cannot exceed the calendar days in the date range (${calendarDays})`,
+      );
+    }
+
     return this.dataSource.transaction(async (manager) => {
       const balanceRepo = manager.getRepository(Balance);
+      const requestRepo = manager.getRepository(TimeOffRequest);
 
-      // 1. Try to sync balance from HCM for freshness
+      // 1. Check for overlapping requests
+      const existingRequests = await requestRepo.find({
+        where: {
+          employeeId: dto.employeeId,
+          locationId: dto.locationId,
+          status: In([RequestStatus.PENDING, RequestStatus.APPROVED]),
+        },
+      });
+
+      const hasOverlap = existingRequests.some(
+        (existing) =>
+          dto.startDate <= existing.endDate &&
+          dto.endDate >= existing.startDate,
+      );
+
+      if (hasOverlap) {
+        throw new ConflictException(
+          'This request overlaps with an existing pending or approved time-off request',
+        );
+      }
+
+      // 2. Try to sync balance from HCM for freshness
       let balance: Balance | null = null;
       try {
         const hcmBalance = await this.hcmService.getBalance(
@@ -82,7 +117,7 @@ export class RequestsService {
         );
       }
 
-      // 2. Defensive local balance check
+      // 3. Defensive local balance check
       const available =
         Number(balance.totalDays) -
         Number(balance.usedDays) -
@@ -93,15 +128,14 @@ export class RequestsService {
         );
       }
 
-      // 3. Create the request
-      const requestRepo = manager.getRepository(TimeOffRequest);
+      // 4. Create the request
       const request = requestRepo.create({
         ...dto,
         status: RequestStatus.PENDING,
       });
       const saved = await requestRepo.save(request);
 
-      // 4. Reserve pending days
+      // 5. Reserve pending days
       balance.pendingDays = Number(balance.pendingDays) + dto.numberOfDays;
       await balanceRepo.save(balance);
 
@@ -115,9 +149,14 @@ export class RequestsService {
     if (query.locationId) where.locationId = query.locationId;
     if (query.status) where.status = query.status;
 
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+
     return this.requestRepository.find({
       where,
       order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
     });
   }
 
@@ -135,6 +174,24 @@ export class RequestsService {
     if (request.status !== RequestStatus.PENDING) {
       throw new BadRequestException(
         `Cannot approve request in ${request.status} status. Only PENDING requests can be approved.`,
+      );
+    }
+
+    // Defensive: re-sync balance from HCM before submitting (balance may have changed since creation)
+    try {
+      const hcmBalance = await this.hcmService.getBalance(
+        request.employeeId,
+        request.locationId,
+      );
+      await this.balancesService.upsertFromHcm(
+        request.employeeId,
+        request.locationId,
+        hcmBalance.totalDays,
+        hcmBalance.version,
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `HCM balance re-sync failed before approval, proceeding with cached balance: ${error.message}`,
       );
     }
 

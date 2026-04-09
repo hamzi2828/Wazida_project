@@ -123,6 +123,64 @@ describe('RequestsService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
+    it('should throw BadRequestException when numberOfDays exceeds calendar days', async () => {
+      await seedBalance('emp-1', 'loc-1', 200);
+
+      await expect(
+        service.create({
+          employeeId: 'emp-1',
+          locationId: 'loc-1',
+          startDate: '2025-07-01',
+          endDate: '2025-07-02',
+          numberOfDays: 10,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw ConflictException for overlapping dates', async () => {
+      await seedBalance('emp-1', 'loc-1', 20);
+
+      await service.create({
+        employeeId: 'emp-1',
+        locationId: 'loc-1',
+        startDate: '2025-07-01',
+        endDate: '2025-07-05',
+        numberOfDays: 5,
+      });
+
+      await expect(
+        service.create({
+          employeeId: 'emp-1',
+          locationId: 'loc-1',
+          startDate: '2025-07-03',
+          endDate: '2025-07-07',
+          numberOfDays: 5,
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should allow non-overlapping dates for same employee', async () => {
+      await seedBalance('emp-1', 'loc-1', 20);
+
+      await service.create({
+        employeeId: 'emp-1',
+        locationId: 'loc-1',
+        startDate: '2025-07-01',
+        endDate: '2025-07-03',
+        numberOfDays: 3,
+      });
+
+      const result = await service.create({
+        employeeId: 'emp-1',
+        locationId: 'loc-1',
+        startDate: '2025-07-10',
+        endDate: '2025-07-12',
+        numberOfDays: 3,
+      });
+
+      expect(result.status).toBe(RequestStatus.PENDING);
+    });
+
     it('should fall back to local balance when HCM sync fails', async () => {
       await balancesService.upsertFromHcm('emp-1', 'loc-1', 20, 'v1');
       jest
